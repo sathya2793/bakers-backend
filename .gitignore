@@ -1,0 +1,14 @@
+bin
+coverage
+build
+node_modules
+.envrc
+.DS_Store
+.env
+npm-debug.log
+*.sublime-project
+*.sublime-workspace
+*.md
+.envrc
+.idea/
+.vscode/*
