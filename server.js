@@ -27,17 +27,16 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
   if (!file) {
     return res.status(400).send('No file uploaded');
   }
-  const key = `product-cake/${Date.now()}_${file.originalname}`;
+  const key = `product-cakes-image/${Date.now()}_${file.originalname}`;
 
   try {
     await s3.send(new PutObjectCommand({
-      Bucket: 'product-cake',
+      Bucket: 'product-cakes-image',
       Key: key,
       Body: file.buffer,
       ContentType: file.mimetype,
     }));
-    const url = `https://product-cake.s3.ap-south-1.amazonaws.com/${key}`;
-     console.log(url);
+    const url = `https://product-cakes-image.s3.ap-south-1.amazonaws.com/${key}`;
     res.json({ url });
   } catch (err) {
     console.error(err);
