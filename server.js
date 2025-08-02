@@ -86,6 +86,35 @@ const dynamoClient = new DynamoDBClient({
 
 const TableName = process.env.DYNAMODB_TABLE_NAME || 'Cakes';
 
+// GET /api/products - List all products (public, no auth required)
+app.get('/api/productscard', async (req, res) => {
+  try {
+    const result = await dynamoClient.send(new ScanCommand({ TableName }));
+    const products = (result.Items || []).map(item => unmarshall(item));
+    
+    // Sort products by newest createdAt first
+    const sortedProducts = products.sort((a, b) => {
+      const dateA = new Date(a.createdAt || 0);
+      const dateB = new Date(b.createdAt || 0);
+      return dateB - dateA;
+    });
+
+    res.status(200).json({
+      success: true,
+      data: sortedProducts,
+      message: `Retrieved ${sortedProducts.length} products`,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error fetching products:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch products',
+      error: 'DATABASE_ERROR',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 // Helper Functions
 const sendErrorResponse = (res, statusCode, message, errorCode = null, details = null) => {
   const errorResponse = {
