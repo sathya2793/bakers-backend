@@ -6,7 +6,7 @@ const path = require('path');
 const { DynamoDBClient, PutItemCommand, ScanCommand, DeleteItemCommand, GetItemCommand, QueryCommand } = require('@aws-sdk/client-dynamodb');
 const { marshall, unmarshall } = require('@aws-sdk/util-dynamodb');
 const authMiddleware = require('./middleware/authMiddleware');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 // Environment variable validation
 const requiredEnvVars = [
   'AWS_ACCESS_KEY_ID',
@@ -506,6 +506,41 @@ app.post('/api/send-cake-request', (req, res) => {
 // Apply auth middleware to product routes
 app.use('/api/products', authMiddleware);
 
+// GET /api/custom-cakes/images - Fetch all images from custom-cakes bucket
+app.get('/api/custom-cakes/images', async (req, res) => {
+  try {
+    const bucketName = process.env.CUSTOM_CAKES_BUCKET || 'custom-cakes';
+    const region = process.env.AWS_REGION || 'ap-south-1';
+    const command = new ListObjectsV2Command({
+      Bucket: bucketName,
+      MaxKeys: 50
+    });
+
+    const result = await s3.send(command);
+    const imageObjects = (result.Contents || [])
+      .filter(object => {
+        const key = object.Key.toLowerCase();
+        return key.endsWith('.jpg') || 
+               key.endsWith('.jpeg') || 
+               key.endsWith('.png') || 
+               key.endsWith('.webp') ||
+               key.endsWith('.gif');
+      })
+      .map(object => ({
+        img: `https://${bucketName}.s3.${region}.amazonaws.com/${object.Key}`,
+        key: object.Key,
+        lastModified: object.LastModified,
+        size: object.Size
+      }));
+    sendSuccessResponse(res, {
+      images: imageObjects,
+      count: imageObjects.length
+    }, 'Custom cake images fetched successfully');
+  } catch (error) {
+    console.error('Error fetching custom cake images:', error);
+    sendErrorResponse(res, 'Error fetching custom cake images', 500);
+  }
+});
 
 // Product Routes
 
@@ -669,6 +704,156 @@ app.delete('/api/products/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting product:', error);
     sendErrorResponse(res, 500, 'Failed to delete product', 'DATABASE_ERROR');
+  }
+});
+
+// Quick Suggestions Routes
+
+// Define a new table name for quick suggestions
+const QuickSuggestionsTable = 'quickSuggestion';
+const SUGGESTIONS_ID = 'all_suggestions';
+
+// GET /api/quick-suggestions - Get all quick suggestions from single JSON
+app.get('/api/quick-suggestions', async (req, res) => {
+  try {
+    const params = {
+      TableName: QuickSuggestionsTable,
+      Key: marshall({ id: SUGGESTIONS_ID })
+    };
+    
+    const result = await dynamoClient.send(new GetItemCommand(params));
+    
+    if (result.Item) {
+      const record = unmarshall(result.Item);
+      sendSuccessResponse(res, record.suggestions || {}, 'Retrieved quick suggestions successfully');
+    } else {
+      // Return empty suggestions if no record exists
+      sendSuccessResponse(res, {}, 'No quick suggestions found');
+    }
+  } catch (error) {
+    console.error('Error fetching quick suggestions:', error);
+    sendErrorResponse(res, 500, 'Failed to fetch quick suggestions', 'DATABASE_ERROR');
+  }
+});
+
+// POST /api/quick-suggestions - Save all quick suggestions in single JSON
+app.post('/api/quick-suggestions', authMiddleware, async (req, res) => {
+  try {
+    const { suggestions } = req.body; // Expected: { flavor: ["chocolate", "vanilla"], event: ["birthday"] }
+    
+    // Validate input
+    if (!suggestions || typeof suggestions !== 'object') {
+      return sendErrorResponse(res, 400, 'Suggestions object is required', 'VALIDATION_ERROR');
+    }
+
+    const timestamp = new Date().toISOString();
+    
+    // Clean and validate suggestions
+    const cleanedSuggestions = {};
+    Object.entries(suggestions).forEach(([field, values]) => {
+      if (Array.isArray(values)) {
+        const cleanValues = values
+          .map(value => String(value).trim())
+          .filter(value => value.length > 0)
+          .filter((value, index, array) => 
+            // Remove duplicates (case-insensitive)
+            array.findIndex(v => v.toLowerCase() === value.toLowerCase()) === index
+          );
+          
+        if (cleanValues.length > 0) {
+          cleanedSuggestions[field] = cleanValues;
+        }
+      }
+    });
+
+    // Create/update the single record with all suggestions
+    const suggestionRecord = {
+      id: SUGGESTIONS_ID,
+      suggestions: cleanedSuggestions,
+      updatedAt: timestamp,
+      createdAt: timestamp
+    };
+
+    await dynamoClient.send(new PutItemCommand({
+      TableName: QuickSuggestionsTable,
+      Item: marshall(suggestionRecord)
+    }));
+    
+    sendSuccessResponse(res, cleanedSuggestions, 'Quick suggestions saved successfully', 200);
+  } catch (error) {
+    console.error('Error saving quick suggestions:', error);
+    sendErrorResponse(res, 500, 'Failed to save quick suggestions', 'DATABASE_ERROR');
+  }
+});
+
+// PUT /api/quick-suggestions - Alternative endpoint for updates
+app.put('/api/quick-suggestions', authMiddleware, async (req, res) => {
+  try {
+    const { suggestions } = req.body;
+    
+    if (!suggestions || typeof suggestions !== 'object') {
+      return sendErrorResponse(res, 400, 'Suggestions object is required', 'VALIDATION_ERROR');
+    }
+
+    // Get existing record first
+    const getParams = {
+      TableName: QuickSuggestionsTable,
+      Key: marshall({ id: SUGGESTIONS_ID })
+    };
+    
+    const existingResult = await dynamoClient.send(new GetItemCommand(getParams));
+    const existingRecord = existingResult.Item ? unmarshall(existingResult.Item) : {};
+
+    const timestamp = new Date().toISOString();
+    
+    // Clean new suggestions
+    const cleanedSuggestions = {};
+    Object.entries(suggestions).forEach(([field, values]) => {
+      if (Array.isArray(values)) {
+        const cleanValues = values
+          .map(value => String(value).trim())
+          .filter(value => value.length > 0)
+          .filter((value, index, array) => 
+            array.findIndex(v => v.toLowerCase() === value.toLowerCase()) === index
+          );
+          
+        if (cleanValues.length > 0) {
+          cleanedSuggestions[field] = cleanValues;
+        }
+      }
+    });
+
+    const updatedRecord = {
+      id: SUGGESTIONS_ID,
+      suggestions: cleanedSuggestions,
+      updatedAt: timestamp,
+      createdAt: existingRecord.createdAt || timestamp
+    };
+
+    await dynamoClient.send(new PutItemCommand({
+      TableName: QuickSuggestionsTable,
+      Item: marshall(updatedRecord)
+    }));
+    
+    sendSuccessResponse(res, cleanedSuggestions, 'Quick suggestions updated successfully');
+  } catch (error) {
+    console.error('Error updating quick suggestions:', error);
+    sendErrorResponse(res, 500, 'Failed to update quick suggestions', 'DATABASE_ERROR');
+  }
+});
+
+// DELETE /api/quick-suggestions - Clear all suggestions
+app.delete('/api/quick-suggestions', authMiddleware, async (req, res) => {
+  try {
+    await dynamoClient.send(new DeleteItemCommand({
+      TableName: QuickSuggestionsTable,
+      Key: marshall({ id: SUGGESTIONS_ID })
+    }));
+
+    sendSuccessResponse(res, {}, 'All quick suggestions cleared successfully');
+  } catch (error) {
+    console.error('Error clearing quick suggestions:', error);
+    sendErrorResponse(res, 500, 'Failed to clear quick suggestions', 'DATABASE_ERROR');
   }
 });
 
