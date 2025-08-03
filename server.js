@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const nodemailer = require('nodemailer');
+const helmet = require('helmet');
 const multer = require('multer');
 const path = require('path');
 const { DynamoDBClient, PutItemCommand, ScanCommand, DeleteItemCommand, GetItemCommand, QueryCommand } = require('@aws-sdk/client-dynamodb');
@@ -28,6 +29,7 @@ const PORT = process.env.PORT || 5005;
 
 // Middleware
 app.use(cors());
+app.use(helmet()); 
 app.use(express.json({ limit: '10mb' }));
 
 // Add this middleware before your routes
